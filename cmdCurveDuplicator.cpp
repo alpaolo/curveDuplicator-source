@@ -4,6 +4,7 @@
 
 #include "StdAfx.h"
 #include "CurveDuplicatorPlugIn.h"
+#include "CurveTypeUtils.h"
 
 ////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////
@@ -65,49 +66,59 @@ static class CCommandCurveDuplicator theCurveDuplicatorCommand;
 CRhinoCommand::result CCommandCurveDuplicator::RunCommand( const CRhinoCommandContext& context )
 {
 
+	ON_wString wStr;
+	bool perpendicular = false;
+	ON_Curve* masterCurve; // *** Curve in which lie the duplicated curve
+	const ON_Curve* curveToDuplicate; 
+	ON_3dPoint curveToDuplicateSelectionClosestPoint;
 
 	/*********************************************************************************
-
+	BEGIN USER INTERACTION
 	*********************************************************************************/
-
-	ON_wString wStr;
-	int getObjectCount;
-	const ON_Curve* masterCurve;
-	const ON_Curve* curveToDuplicate;
-	const CRhinoObject* objToDuplicate;
-
-
-	/****************************** GET CURVE AND PROMPTS ************************************/
+	/* 
+	GET CURVE AND PROMPTS 
+	*/
 	CRhinoGetObject go;
 	go.SetCommandPrompt( L"Select master curve and curve to duplicate" );
 	go.SetGeometryFilter( CRhinoGetObject::curve_object );
 
+	const ON_Curve* tempCurve;
+
 	CRhinoGet::result res = go.GetObjects(2,2);
 	if( res == CRhinoGet::object )
 	{
-		const CRhinoObjRef& obj_ref = go.Object( 0 );
-		masterCurve = obj_ref.Curve();
-		if( !masterCurve ) {
+		const CRhinoObjRef& obj_ref = go.Object( 0 ); // *** Get the reference to master curve
+		tempCurve = obj_ref.Curve(); // Get the pointer to master curve (temporary)
+		if( tempCurve ) {
+			masterCurve = const_cast<ON_Curve*>(tempCurve); // Master curve - This for reverse curve method that doesn't accept const object
+		}
+		else {
 			wStr.Format( L"The selected master object is not a valid curve");
 			RhinoMessageBox( wStr, PlugIn()->PlugInName(), MB_OK );
 			return CRhinoCommand::failure;
 		}
-		const CRhinoObjRef& curveToDuplicateObj_ref = go.Object( 1 );
+		const CRhinoObjRef& curveToDuplicateObj_ref = go.Object( 1 ); // Get 
 		curveToDuplicate = curveToDuplicateObj_ref.Curve();
-		// Get Object from ref for Transform method (???)
-		objToDuplicate=curveToDuplicateObj_ref.Object();
-		if( !curveToDuplicate ) {
+		if( !curveToDuplicate) {
 			wStr.Format( L"The selected dupli object is not a valid curve");
 			RhinoMessageBox( wStr, PlugIn()->PlugInName(), MB_OK );
 			return CRhinoCommand::failure;
 		}
+		else {
+			const ON_Interval subDomain = ON_Interval();
+			curveToDuplicateSelectionClosestPoint = go.Object(1).m_point;
+			curveToDuplicate->GetClosestPoint(curveToDuplicateSelectionClosestPoint,0,0.00000001,&subDomain);
+			//wStr.Format( L"The point is x %f y %f ",curveToDuplicateSelectionClosestPoint.x, curveToDuplicateSelectionClosestPoint.y);
+			//RhinoMessageBox( wStr, PlugIn()->PlugInName(), MB_OK );
+		}
 	}
-	wStr.Format( L"Il processo di curve è finito");
-	RhinoMessageBox( wStr, PlugIn()->PlugInName(), MB_OK );
+	if( go.CommandResult() != success ) return go.CommandResult();
 
-	/****************************** NUMBER OF DUPLICATION PROMPTS ************************************/
+	/*
+	NUMBER OF DUPLICATION PROMPTS 
+	*/
 	CRhinoGetInteger gi;
-	gi.SetCommandPrompt( L"Number of segments" );
+	gi.SetCommandPrompt( L"Number of duplication" );
 	gi.SetDefaultInteger( 2 );
 	gi.SetLowerLimit( 2 );
 	gi.SetUpperLimit( 100 );
@@ -119,44 +130,111 @@ CRhinoCommand::result CCommandCurveDuplicator::RunCommand( const CRhinoCommandCo
 	if( gi.Result() != CRhinoGet::number )
 		return CRhinoCommand::failure;
 
-	int count = gi.Number();
-	//count++;
-	ON_SimpleArray<double> t( count );
-	t.SetCount( count );
+	int duplicationCount = gi.Number();
 
+
+	/*********************************************************************************
+	END USER INTERACTION - BEGIN DATA PROCESS
+	*********************************************************************************/
+
+	/*
+	For first get the direction of master curve for placement duplicated curve.
+	NEED MORE SPECIFICATIONS ON HOW TO POSITION CURVES
+	For each duplication calculates the duplication point on the master curve, 
+	get the angle on point and apply to duplicated curve with translation
+	*/
+
+	ON_SimpleArray<double> masterCurveParameters ( duplicationCount );
+	masterCurveParameters.SetCount( duplicationCount );
 	int i;
-	for( i = 0; i < count; i++ )
+
+	/*
+	Get curve parameters for analize direction (è inutile ? c'è un'altro metodo) ( Double loops to avoid calling GetNormalizedArcLengthPoints for every duplications)
+	*/
+	for( i = 0; i < duplicationCount; i++ ) //
 	{
-		double param = (double)i / ((double)count-1);
-		t[i] = param;
+		double parameter = (double)i / ((double)duplicationCount-1);
+		masterCurveParameters[i] = parameter;
 	}
+	masterCurve->GetNormalizedArcLengthPoints(duplicationCount, (double*)&masterCurveParameters[0], (double*)&masterCurveParameters[0]);
+	
+	/*ON_3dPoint originalCurveStartPoint = masterCurve->PointAt( masterCurveParameters[0] ); 
+	context.m_doc.AddPointObject( originalCurveStartPoint );*/
+	
+	/* 
+	Get the master curve angle (direction) at start respect to x axis
+	*/
+	double masterCurveAngleDegreesOnStart =curveAngleDeegresAtPointRespectRefAxis(masterCurve,RhinoActiveCPlane().xaxis,masterCurveParameters[0]);
 
-	ON_Xform xform;
-	//xform.Identity();
-
-	ON_2dexMap group_map;
-
-	if( masterCurve->GetNormalizedArcLengthPoints(count, (double*)&t[0], (double*)&t[0]) )
+	if(masterCurveAngleDegreesOnStart<0) // Curve direction is antiorario
 	{
-		ON_3dPoint curveToDuplicateStartPoint=curveToDuplicate->PointAtStart();
+		wStr.Format( L"direction on start is counterclockwise: reverse the curve");
+		RhinoMessageBox( wStr, PlugIn()->PlugInName(), MB_OK );
+		masterCurve->Reverse();	// *** Reverse the curve
 		
-		
-		
-		for( i = 0; i < count; i++ )
+		/*
+		Reset curve parameters
+		*/
+		for( i = 0; i < duplicationCount; i++ ) //
 		{
-			ON_3dPoint duplicationPoint = masterCurve->PointAt( t[i] );
-			xform.Translation( duplicationPoint - curveToDuplicateStartPoint );
-			//xform.Translation(2*i,2*i,2*i);
-			CRhinoObject* duplicate = context.m_doc.TransformObject(objToDuplicate, xform, true, false, true );
-			//CRhinoObject* duplicate = objToDuplicate->Duplicate();
-			context.m_doc.AddPointObject( duplicationPoint );
-			if( duplicate ) context.m_doc.Redraw(); //RhinoUpdateObjectGroups( duplicate, group_map );
-			else {
-				delete duplicate; return CRhinoCommand::failure;
-			}
+			double parameter = (double)i / ((double)duplicationCount-1);
+			masterCurveParameters[i] = parameter;
 		}
-		return CRhinoCommand::success; 
+		masterCurve->GetNormalizedArcLengthPoints(duplicationCount, (double*)&masterCurveParameters[0], (double*)&masterCurveParameters[0]);
+		masterCurveAngleDegreesOnStart =curveAngleDeegresAtPointRespectRefAxis(masterCurve,RhinoActiveCPlane().xaxis,masterCurveParameters[0]);
 	}
+
+	ON_Curve* duplicatedCurve; // *** Curve to duplicate
+
+	for( i = 0; i < duplicationCount; i++ )
+	{
+		ON_3dPoint duplicationPoint = masterCurve->PointAt( masterCurveParameters[i] );
+		
+		double  duplicatedCurveAngleDegrees;
+		double  masterCurveAngleDegrees;
+		duplicatedCurve = curveToDuplicate->DuplicateCurve();
+		
+		if( masterCurve->GetClosestPoint(duplicationPoint, &masterCurveParameters[i])) 	// *** Get the closest point to parameter in master curve		
+		{
+			/* 
+			Calculate the master curve point angle respect to x axis
+			*/
+			masterCurveAngleDegrees = curveAngleDeegresAtPointRespectRefAxis(masterCurve,RhinoActiveCPlane().xaxis,masterCurveParameters[i]);			
+			/*
+			Get the duplicated curve vector only for get the duplicatedCurve angle
+			*/
+			ON_3dVector duplicatedCurveVector;
+			duplicatedCurveVector = ON_3dVector(duplicatedCurve->PointAtEnd()-duplicatedCurve->PointAtStart());
+			duplicatedCurveVector.Unitize();
+			/* 
+			Calculate the duplicated curve (curve to duplicate) angle respect to x axis to reset the rotation 
+			*/
+			duplicatedCurveAngleDegrees = vectorAngleDeegresRespectRefAxis(duplicatedCurveVector,RhinoActiveCPlane().xaxis);
+
+		}
+		else {
+			return CRhinoCommand::failure;
+		}
+		/*
+		Resetting the rotation and position
+		*/
+		if(false) {
+			duplicatedCurve->Rotate(((duplicatedCurveAngleDegrees) * ON_PI / 180.0),RhinoActiveCPlane().zaxis,curveToDuplicateSelectionClosestPoint); // *** Reset rotation
+			duplicatedCurve->Translate(ON_3dPoint(-curveToDuplicateSelectionClosestPoint.x,-curveToDuplicateSelectionClosestPoint.y,0));
+		}
+		/*
+		Positioning and rotate duplicatedCurve on masterCurve duplication point
+		*/
+		if(true) {
+			duplicatedCurve->Translate(duplicationPoint-curveToDuplicateSelectionClosestPoint); // Positioning curve on masterCurve duplication point
+			duplicatedCurve->Rotate((-(masterCurveAngleDegrees-masterCurveAngleDegreesOnStart) * ON_PI / 180.0),RhinoActiveCPlane().zaxis,duplicationPoint ); // *** Apply rotation
+		}
+		
+		context.m_doc.AddCurveObject(*duplicatedCurve /*,&attribs*/ );			
+	}
+	context.m_doc.Redraw();
+
+	return CRhinoCommand::success; 
 }
 
 #pragma endregion
