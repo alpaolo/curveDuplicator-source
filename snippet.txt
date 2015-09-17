@@ -1,0 +1,103 @@
+ON_PolyCurve in_poly_curve;
+// dove  ON_PolyCurve : public ON_Curve
+in_poly_curve.Count() 
+//rItorna numero di segmenti della curva cicli su tali elementi e ricavi
+const ON_Curve* p_cur_curve = in_poly_curve[i]; 
+
+Windows has triggered a breakpoint in Rhino.exe.
+This may be due to a corruption of the heap, which indicates a bug in Rhino.exe or any of the DLLs it has loaded.
+
+polylineCurve->GetSpanVector(knots);
+						for (int index=0; index<pointInPolyline; index++) {
+							p = polylineCurve->PointAt(knots[index]);
+							wStr.Format( L"Coordinate del PUNTO %d: x=%f y=%f z=%f ", index, p.x, p.y, p.z);
+							RhinoMessageBox( wStr, PlugIn()->PlugInName(), MB_OK );
+							x[index]=p.x;
+							y[index]=p.y;							
+						};
+
+da McNeel
+How is the representation of knot vector in openNURBS different from that in OpenGL's NURBS renderer? In openNURBS, the formula is:
+
+m = n + p - 2
+where m is the number of knots in the knot vector; n is the number of control points; p is the order of the curve.
+
+da wiki.mcneel/rhino/nurbs
+
+The knots are a list of degree+N-1 numbers, where N is the number of control points. Sometimes this list of numbers is called the knot vector. In this term, the word vector does not mean 3D direction.
+
+
+Rhino usa diverse definizioni per il software e l'sdk nel software i punti di modifica (edit points) nell'sdk nodi (knots) nel software usa i punti di controllo mentre nell'sdk CV (control vertex ).
+
+
+
+http://stackoverflow.com/questions/24747720/is-there-any-difference-between-closed-and-open-nurbs-on-control-and-knots
+
+
+/*********************************************************************************
+										USER REQUEST
+	  *********************************************************************************/
+	
+	  CRhinoGetObject go;
+	  // Only curve objects
+	  //go.SetGeometryFilter( CRhinoGetObject::curve_object );
+	  CRhinoObjRef& objref = go.Object(0);
+
+	  /****************************** MASTER CURVE ************************************/
+	  go.SetCommandPrompt( L"Select master curve" );
+	  go.GetObjects( 1, 1 );
+ 
+	  if( go.Result() == CRhinoGet::cancel )
+		return CRhinoCommand::cancel;
+ 
+	  if( go.Result() != CRhinoGet::object | go.ObjectCount() <= 0 )
+		return CRhinoCommand::failure;
+	
+	  
+	  const ON_Curve* masterCurve = objref.Curve();
+	  if( !masterCurve )
+		return CRhinoCommand::failure;
+
+	 
+
+	  /****************************** NUMBER OF DUPLICATION  ************************************/
+	  CRhinoGetInteger gi;
+	  gi.SetCommandPrompt( L"Number of duplication (2-100)" );
+	  gi.SetDefaultInteger( 2 );
+	  gi.SetLowerLimit( 2 );
+	  gi.SetUpperLimit( 100 );
+	  gi.GetInteger();
+ 
+	  if( gi.Result() == CRhinoGet::cancel )
+		return CRhinoCommand::cancel;
+ 
+	  if( gi.Result() != CRhinoGet::number )
+		return CRhinoCommand::failure;
+ 
+
+
+	  int count = gi.Number();
+	   
+	  ON_SimpleArray<double> t( count );
+	  t.SetCount( count );
+ 
+	  int i;
+	  for( i = 0; i < count; i++ )
+	  {
+		double param = (double)i / ((double)count-1);
+		t[i] = param;
+	  }
+	  if( masterCurve->GetNormalizedArcLengthPoints(count, (double*)&t[0], (double*)&t[0]) )
+	  {
+		for( i = 0; i < count; i++ )
+		{
+		  ON_3dPoint pt = masterCurve->PointAt( t[i] );
+		  context.m_doc.AddPointObject( pt );
+		  //context.m_doc.AddCurveObject(*curveToDuplicate);
+		  //context.m_doc.Redraw();
+		}
+		context.m_doc.Redraw();
+	  }
+	  return CRhinoCommand::success;
+
+Determines the direction of the master curve for placement curve to duplicate. NEED MORE SPECIFICATIONS ON HOW TO POSITION CURVES
